@@ -8,25 +8,30 @@ import akka.util.Timeout
 
 object BasketRequestManager {
 
-  def props(stock: ActorRef, basket: ActorRef)(implicit timeout: Timeout) =
-    Props(new BasketRequestManager(stock, basket, timeout))
+  def props(stock: ActorRef, basketsManager: ActorRef)(implicit timeout: Timeout) =
+    Props(new BasketRequestManager(stock, basketsManager, timeout))
 
-  case object GetAllUnits
-  case class GetProductUnits(productId: UID)
-  case class GetUnit(unitId: UID)
-  case class AddToBasket(productId: UID, count: Int)
-  case object RemoveAllUnits
-  case class RemoveProductUnits(productId: UID)
-  case class RemoveUnit(unitId: UID)
+  case object GetAllBasketsContent
+  case class GetAllUnits(userId: UID)
+  case class GetProductUnits(userId: UID, productId: UID)
+  case class GetUnit(userId: UID, unitId: UID)
+  case class AddToBasket(userId: UID, productId: UID, count: Int)
+  case class RemoveAllUnits(userId: UID)
+  case class RemoveProductUnits(userId: UID, productId: UID)
+  case class RemoveUnit(userId: UID, unitId: UID)
+  case class RemoveBasket(userId: UID)
 
-  case class ProductUnits(units: Seq[ProductUnit])
-  case class AddedUnits(units: Seq[ProductUnit])
+  case class AllBasketsContent(unitsByUserId: Map[UID, List[ProductUnit]])
+  case class ProductUnits(units: List[ProductUnit])
+  case class AddedUnits(units: List[ProductUnit])
   case class NotEnoughStockUnits(requestedUnitsCount: Int, availableUnitsCount: Int)
   case class RemovedUnits(units: List[ProductUnit])
+  case class BasketRemoved(userId: UID, units: List[ProductUnit])
+  case class BasketNotFound(userId: UID)
 
 }
 
-class BasketRequestManager(stock: ActorRef, basket: ActorRef, timeout: Timeout) extends Actor with ActorLogging {
+class BasketRequestManager(stock: ActorRef, basketsManager: ActorRef, timeout: Timeout) extends Actor {
   import BasketRequestManager._
   import context._
 
@@ -36,66 +41,134 @@ class BasketRequestManager(stock: ActorRef, basket: ActorRef, timeout: Timeout) 
 
   private def waitingForRequest: Receive = {
 
-    case GetAllUnits =>
-      basket ! Basket.Get()
-      become(gettingBasketUnitsList(sender))
+    case GetAllBasketsContent =>
+      basketsManager ! BasketsManager.GetAllBaskets
+      become(gettingAllBasketsContent(sender))
 
-    case GetProductUnits(productId) =>
-      basket ! Basket.Get(_.product.id == productId)
-      become(gettingBasketUnitsList(sender))
-
-    case GetUnit(unitId) =>
-      basket ! Basket.Get(_.id == unitId)
-      become(gettingBasketUnitsList(sender))
-
-    case AddToBasket(productId, count) =>
+    case AddToBasket(userId, productId, count) =>
       stock ! Stock.RequestUnits(productId, count)
-      become(addingUnitsToBasket(sender))
+      become(requestingUnitsFromStock(sender, userId))
 
-    case RemoveAllUnits =>
-      basket ! Basket.Remove()
-      become(removingUnitsFromBasket(sender))
+    case GetAllUnits(userId) =>
+      basketsManager ! BasketsManager.RequestBasket(userId)
+      become(gettingBasketUnitsList(sender, _ => true))
 
-    case RemoveProductUnits(productId) =>
-      basket ! Basket.Remove(_.product.id == productId)
-      become(removingUnitsFromBasket(sender))
+    case GetProductUnits(userId, productId) =>
+      basketsManager ! BasketsManager.RequestBasket(userId)
+      become(gettingBasketUnitsList(sender, _.product.id == productId))
 
-    case RemoveUnit(unitId) =>
-      basket ! Basket.Remove(_.id == unitId)
-      become(removingUnitsFromBasket(sender))
+    case GetUnit(userId, unitId) =>
+      basketsManager ! BasketsManager.RequestBasket(userId)
+      become(gettingBasketUnitsList(sender, _.id == unitId))
+
+    case RemoveAllUnits(userId) =>
+      basketsManager ! BasketsManager.RequestBasket(userId)
+      become(removingUnitsFromBasket(sender, _ => true))
+
+    case RemoveProductUnits(userId, productId) =>
+      basketsManager ! BasketsManager.RequestBasket(userId)
+      become(removingUnitsFromBasket(sender, _.product.id == productId))
+
+    case RemoveUnit(userId, unitId) =>
+      basketsManager ! BasketsManager.RequestBasket(userId)
+      become(removingUnitsFromBasket(sender, _.id == unitId))
+
+    case RemoveBasket(userId) =>
+      basketsManager ! BasketsManager.RemoveBasket(userId)
+      become(removingBasket(sender, userId))
 
   }
 
-  private def gettingBasketUnitsList(requestSender: ActorRef): Receive = {
+  private def gettingAllBasketsContent(requestSender: ActorRef, totalUsersCount: Int = -1,
+                                       unitsAcc: List[(UID, List[ProductUnit])] = List.empty): Receive = {
 
-    case Basket.Units(units) =>
-      requestSender ! ProductUnits(units)
-      stop(self)
+    case BasketsManager.AllBaskets(basketsByUserId) =>
+      if (basketsByUserId.isEmpty) {
+        requestSender ! AllBasketsContent(Map.empty)
+        stop(self)
+      } else {
+        basketsByUserId foreach { case (_, basket) => basket ! Basket.Get(_ => true) }
+        become(gettingAllBasketsContent(requestSender, basketsByUserId.keySet.size))
+      }
+
+    case Basket.Units(userId, units) =>
+      val newUnitsAcc = unitsAcc :+ userId -> units
+      if (newUnitsAcc.size == totalUsersCount) {
+        requestSender ! AllBasketsContent(newUnitsAcc.toMap)
+        stop(self)
+      } else {
+        become(gettingAllBasketsContent(requestSender, totalUsersCount, newUnitsAcc))
+      }
 
   }
 
-  private def addingUnitsToBasket(requestSender: ActorRef): Receive = {
+  private def requestingUnitsFromStock(requestSender: ActorRef, userId: Int): Receive = {
 
     case Stock.RequestedUnits(_, units) =>
-      basket ! Basket.Add(units)
+      basketsManager ! BasketsManager.RequestBasketCreateIfNeed(userId)
+      become(addingUnitsToBasket(requestSender, units))
 
     case Stock.NotEnoughUnits(_, requestedCount, availableCount) =>
       requestSender ! NotEnoughStockUnits(requestedCount, availableCount)
       stop(self)
 
-    case Basket.Added(units) =>
+  }
+
+  private def addingUnitsToBasket(requestSender: ActorRef, units: List[ProductUnit]): Receive = {
+
+    case BasketsManager.RequestedBasket(_, basket) =>
+      basket ! Basket.Add(units)
+
+    case Basket.Added(_, _) =>
       requestSender ! AddedUnits(units)
       stop(self)
 
   }
 
-  private def removingUnitsFromBasket(requestSender: ActorRef): Receive = {
+  private def gettingBasketUnitsList(requestSender: ActorRef, predicate: ProductUnit => Boolean): Receive = {
 
-    case Basket.Removed(units) =>
+    case BasketsManager.RequestedBasket(_, basket) =>
+      basket ! Basket.Get(predicate)
+
+    case BasketsManager.BasketNotFound(userId) =>
+      requestSender ! BasketNotFound(userId)
+      stop(self)
+
+    case Basket.Units(_, units) =>
+      requestSender ! ProductUnits(units)
+      stop(self)
+
+  }
+
+  private def removingUnitsFromBasket(requestSender: ActorRef, predicate: ProductUnit => Boolean): Receive = {
+
+    case BasketsManager.RequestedBasket(_, basket) =>
+      basket ! Basket.Remove(predicate)
+
+    case BasketsManager.BasketNotFound(userId) =>
+      requestSender ! BasketNotFound(userId)
+      stop(self)
+
+    case Basket.Removed(_, units) =>
       stock ! Stock.AddUnits(units)
 
     case Stock.AddedUnits(units) =>
       requestSender ! RemovedUnits(units)
+      stop(self)
+
+  }
+
+  private def removingBasket(requestSender: ActorRef, userId: UID): Receive = {
+
+    case BasketsManager.BasketNotFound(_) =>
+      requestSender ! BasketNotFound(userId)
+      stop(self)
+
+    case Basket.Removed(_, units) =>
+      stock ! Stock.AddUnits(units)
+
+    case Stock.AddedUnits(units) =>
+      requestSender ! BasketRemoved(userId, units)
       stop(self)
 
   }

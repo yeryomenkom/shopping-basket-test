@@ -1,4 +1,4 @@
-import Models.ProductUnit
+import Models.{ProductUnit, UID}
 import akka.actor.{Actor, Props}
 
 /**
@@ -7,36 +7,42 @@ import akka.actor.{Actor, Props}
 
 object Basket {
 
-  def props() = Props(new Basket())
+  def props(userId: UID) = Props(new Basket(userId))
 
-  case class Get(predicate: ProductUnit => Boolean = _ => true)
+  case class Get(predicate: ProductUnit => Boolean)
   case class Add(units: List[ProductUnit])
-  case class Remove(predicate: ProductUnit => Boolean = _ => true)
+  case class Remove(predicate: ProductUnit => Boolean)
+  case object RemoveAllAndClose
 
-  case class Units(units: List[ProductUnit])
-  case class Added(units: List[ProductUnit])
-  case class Removed(units: List[ProductUnit])
+  case class Units(userId: UID, units: List[ProductUnit])
+  case class Added(userId: UID, units: List[ProductUnit])
+  case class Removed(userId: UID, units: List[ProductUnit])
 
 }
 
-class Basket extends Actor {
+class Basket(val userId: UID) extends Actor {
   import Basket._
+  import context._
 
   private var currentProductUnits: List[ProductUnit] = List.empty
 
   override def receive: Receive = {
 
     case Get(predicate) =>
-      sender ! Units(currentProductUnits filter predicate)
+      sender ! Units(userId, currentProductUnits filter predicate)
 
     case Add(units) =>
       currentProductUnits = currentProductUnits ::: units
-      sender ! Added(units)
+      sender ! Added(userId, units)
 
     case Remove(predicate) =>
       val (removed, others) = currentProductUnits partition predicate
       currentProductUnits = others
-      sender ! Removed(removed)
+      sender ! Removed(userId, removed)
+
+    case RemoveAllAndClose =>
+      sender ! Removed(userId, currentProductUnits)
+      stop(self)
 
   }
 

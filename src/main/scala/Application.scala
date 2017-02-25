@@ -26,7 +26,7 @@ object Application extends App with ProductsGenerator {
   val productUnits = generateProductUnits()
   val products = productUnits.map(_.product).distinct
 
-  val basket = system.actorOf(Basket.props(), "basket")
+  val basket = system.actorOf(BasketsManager.props(), "baskets_manager")
   val stock = system.actorOf(Stock.props(), "stock")
 
   stock ! Stock.AddUnits(productUnits)
@@ -46,45 +46,34 @@ object Application extends App with ProductsGenerator {
       } ~
       pathPrefix("shoppingbasket") {
         pathEnd {
-          post {
-            entity(as[Models.Rest.ProductUnitsCount]) { puc =>
-              onSuccess(createRequestManagerActor() ? AddToBasket(puc.productId, puc.unitsCount)) {
-                case AddedUnits(units) =>
-                  complete(units)
-                case NotEnoughStockUnits(requested, available) =>
-                  complete(StatusCodes.InternalServerError,
-                    s"Not enough product items on stock. Requested: $requested. Available: $available.")
-              }
-            }
-          } ~
           get {
-            onSuccess(createRequestManagerActor() ? GetAllUnits) {
-              case ProductUnits(units) => complete(units)
-            }
-          } ~
-          delete {
-            onSuccess(createRequestManagerActor() ? RemoveAllUnits) {
-              case RemovedUnits(units) => complete(s"${units.size} units removed.")
+            onSuccess(createRequestManagerActor() ? GetAllBasketsContent) {
+              case AllBasketsContent(unitsByUserId) =>
+                complete(unitsByUserId)
             }
           }
         } ~
-        path(IntNumber / IntNumber) { case (productId, unitId) =>
+        path(IntNumber / IntNumber / IntNumber) { case (userId, productId, unitId) =>
           get {
-            onSuccess(createRequestManagerActor() ? GetUnit(unitId)) {
+            onSuccess(createRequestManagerActor() ? GetUnit(userId, unitId)) {
               case ProductUnits(units) =>
                 units.headOption.fold(complete(StatusCodes.NotFound))(complete(_))
+              case BasketNotFound(_) => complete(StatusCodes.NotFound,
+                s"Basket for user $userId does not exist.")
             }
           } ~
           delete {
-            onSuccess(createRequestManagerActor() ? RemoveUnit(unitId)) {
+            onSuccess(createRequestManagerActor() ? RemoveUnit(userId, unitId)) {
               case RemovedUnits(units) => complete(s"${units.size} units removed.")
+              case BasketNotFound(_) => complete(StatusCodes.NotFound,
+                s"Basket for user $userId does not exist.")
             }
           }
         } ~
-        path(IntNumber) { productId =>
+        path(IntNumber / IntNumber) { case (userId, productId) =>
           post {
             entity(as[Models.Rest.UnitsCount]) { uc =>
-              onSuccess(createRequestManagerActor() ? AddToBasket(productId, uc.unitsCount)) {
+              onSuccess(createRequestManagerActor() ? AddToBasket(userId, productId, uc.unitsCount)) {
                 case AddedUnits(units) =>
                   complete(units)
                 case NotEnoughStockUnits(requested, available) =>
@@ -94,13 +83,45 @@ object Application extends App with ProductsGenerator {
             }
           } ~
           get {
-            onSuccess(createRequestManagerActor() ? GetProductUnits(productId)) {
+            onSuccess(createRequestManagerActor() ? GetProductUnits(userId, productId)) {
               case ProductUnits(units) => complete(units)
+              case BasketNotFound(_) => complete(StatusCodes.NotFound,
+                s"Basket for user $userId does not exist.")
             }
           } ~
           delete {
-            onSuccess(createRequestManagerActor() ? RemoveProductUnits(productId)) {
+            onSuccess(createRequestManagerActor() ? RemoveProductUnits(userId, productId)) {
               case RemovedUnits(units) => complete(s"${units.size} units removed.")
+              case BasketNotFound(_) => complete(StatusCodes.NotFound,
+                s"Basket for user $userId does not exist.")
+            }
+          }
+        } ~
+        path(IntNumber) { userId =>
+          post {
+            entity(as[Models.Rest.ProductUnitsCount]) { puc =>
+              onSuccess(createRequestManagerActor() ? AddToBasket(userId, puc.productId, puc.unitsCount)) {
+                case AddedUnits(units) =>
+                  complete(units)
+                case NotEnoughStockUnits(requested, available) =>
+                  complete(StatusCodes.InternalServerError,
+                    s"Not enough product items on stock. Requested: $requested. Available: $available.")
+              }
+            }
+          } ~
+          get {
+            onSuccess(createRequestManagerActor() ? GetAllUnits(userId)) {
+              case ProductUnits(units) => complete(units)
+              case BasketNotFound(_) => complete(StatusCodes.NotFound,
+                s"Basket for user $userId does not exist.")
+            }
+          } ~
+          delete {
+            onSuccess(createRequestManagerActor() ? RemoveBasket(userId)) {
+              case BasketRemoved(_, units) =>
+                complete(s"Basket for user $userId removed. ${units.size} units removed.")
+              case BasketNotFound(_) => complete(StatusCodes.NotFound,
+                s"Basket for user $userId does not exist.")
             }
           }
         }
