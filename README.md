@@ -37,3 +37,4 @@ api/shoppingbasket/{user_id}/{product_id}/{unit_id} | Returns product of unit. |
 ## Simplifications
 1. Model indentifiers are simple numbers. In distributed systems we should use UUID or other collision free keys generation systems.
 2. Not full test coverage.
+3. Stock is a single actor, wich contains all units of all products in as a collection.
