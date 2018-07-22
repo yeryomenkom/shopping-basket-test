@@ -26,7 +26,7 @@ Product Unit. Example:
 }
 ```
 ### Endpoints
- | GET | POST | DELETE
+--- | GET | POST | DELETE
 --- | :---: | :---: | :---:
 api/catalog | Returns all available products. | - | -
 api/shoppingbasket | Returns all users basket content grouped by userId. | - | -
